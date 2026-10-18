@@ -7,5 +7,15 @@
     "url": "https://github.com/c10dev"
   },
   "license": "Apache-2.0",
-  "keywords": ["hooks", "claude-md", "agents-md", "rules", "safety", "pkill", "multi-session"]
+  "keywords": [
+    "hooks",
+    "claude-md",
+    "agents-md",
+    "rules",
+    "safety",
+    "pkill",
+    "multi-session"
+  ],
+  "homepage": "https://github.com/c10dev/guard-hooks",
+  "repository": "https://github.com/c10dev/guard-hooks"
 }

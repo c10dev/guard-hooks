@@ -64,10 +64,10 @@ It is a guard rail for an agent that means well, not a sandbox. A determined com
 
 ## Install
 
-From GitHub (replace `<owner>/<repo>` with where this repository lives):
+From GitHub:
 
 ```
-/plugin marketplace add <owner>/<repo>
+/plugin marketplace add c10dev/guard-hooks
 /plugin install guard-hooks@guard-hooks
 ```
 
