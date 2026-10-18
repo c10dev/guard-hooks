@@ -48,7 +48,7 @@ Blocked by default:
 - `fuser -k …`
 - `systemctl stop|restart|kill|disable|mask …` and `launchctl stop|kill|bootout|unload|remove|disable …`, but only for units you list in `KILL_GUARD_UNITS`
 
-Allowed: `kill <pid>`, `kill "$(cat server.pid)"`, and commands that only mention these words (`echo 'pkill node'`, `git log --grep pkill`, heredoc bodies). Commands are split with a small shell tokenizer, not regexes over the whole string.
+Allowed: `kill <pid>`, `kill "$(cat server.pid)"`, and commands that only mention `pkill`, `killall`, `fuser` or `systemctl` (`echo 'pkill node'`, `git log --grep pkill`, heredoc bodies): those are checked per command word with a small shell tokenizer. The `kill $(pgrep …)` and `… | xargs kill` shapes are matched on the raw text, so they are blocked even inside quotes.
 
 When it blocks, Claude sees why and what to do instead:
 
@@ -108,7 +108,7 @@ Everything is set with environment variables. Put them in the `env` block of `.c
 | `RULES_DRIFT_REF` | unset (working tree) | Git ref to read the files from, e.g. `origin/main`. |
 | `GUARD_HOOKS_STATE_DIR` | see below | Where rules-drift keeps its per-session records. |
 | `KILL_GUARD` | on | `off` disables kill-guard. |
-| `KILL_GUARD_PATTERN` | unset (block all) | Regex (case-insensitive). If set, `pkill`/`killall` are blocked only when a pattern argument matches it, e.g. `node|server/index|myapp`. The other rules still apply. An invalid regex blocks all. |
+| `KILL_GUARD_PATTERN` | unset (block all) | Regex (case-insensitive). If set, `pkill`/`killall` are blocked only when a pattern argument matches it, e.g. `node\|server/index\|myapp`. The other rules still apply. An invalid regex blocks all. |
 | `KILL_GUARD_UNITS` | unset | Comma-separated systemd units or launchd labels that must not be stopped or restarted. |
 | `KILL_GUARD_HINT` | unset | Text appended to the block message, e.g. how to restart a service properly. |
 
