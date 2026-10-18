@@ -1,0 +1,11 @@
+{
+  "name": "guard-hooks",
+  "version": "0.1.0",
+  "description": "Two dependency-free Claude Code hooks: rules-drift tells running sessions when CLAUDE.md/AGENTS.md change, kill-guard blocks killing processes by name or pattern.",
+  "author": {
+    "name": "C10",
+    "url": "https://github.com/c10dev"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["hooks", "claude-md", "agents-md", "rules", "safety", "pkill", "multi-session"]
+}

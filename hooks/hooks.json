@@ -1,0 +1,51 @@
+{
+  "description": "rules-drift (SessionStart/UserPromptSubmit/PostToolUse, fail-open) and kill-guard (PreToolUse Bash, fail-closed)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/rules-drift.mjs\" start 2>/dev/null; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/rules-drift.mjs\" check 2>/dev/null; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/rules-drift.mjs\" check 2>/dev/null; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$KILL_GUARD\" = off ] && exit 0; command -v node >/dev/null 2>&1 || { echo 'KILL GUARD: node was not found on PATH, so Bash commands cannot be checked and are blocked. Install Node.js 18+, or set KILL_GUARD=off to turn the guard off.' >&2; exit 2; }; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kill-guard.mjs\" || exit 2",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

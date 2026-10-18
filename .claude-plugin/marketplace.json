@@ -1,0 +1,18 @@
+{
+  "name": "guard-hooks",
+  "owner": {
+    "name": "C10",
+    "url": "https://github.com/c10dev"
+  },
+  "description": "guard-hooks: Claude Code hooks for multi-session work (rules-drift, kill-guard)",
+  "plugins": [
+    {
+      "name": "guard-hooks",
+      "source": "./",
+      "description": "rules-drift: inject CLAUDE.md/AGENTS.md diffs into running sessions. kill-guard: block pkill/killall and other kill-by-name commands.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "productivity"
+    }
+  ]
+}
