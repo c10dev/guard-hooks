@@ -39,22 +39,26 @@ const SYSTEMCTL_VALUES = new Set(["-s", "--signal", "-H", "--host", "-M", "--mac
 const MAX_DEPTH = 8; // bash -c / eval / heredoc nesting
 
 // Package runners: they run their package argument (a version, kill-port@2, is dropped), or with --package the
-// command after it. npx -c and pnpm dlx -c run a command string in a shell.
+// command after it. npx -c, pnpm -c dlx and yarn 4 exec run a command string in a shell.
 const NPM_EXEC = { short: "pcw", long: ["--package", "--call", "--workspace", "--cache", "--userconfig", "--registry", "--prefix", "--loglevel", "--shell", "--script-shell"], script: ["c", "--call"], pkg: true };
 const PNPM_DLX = { long: ["--package", "--allow-build", "--cpu", "--os", "--libc"], shellMode: ["c", "--shell-mode"], pkg: true };
+const PNPM_EXEC = { short: "F", long: ["--filter", "--resume-from"], shellMode: ["c", "--shell-mode"] };
 const BUNX = { short: "p", long: ["--package"], pkg: true };
-// Runners reached through a subcommand (npm exec, pnpm dlx, yarn dlx, bun x); global: options before the subcommand
+// Runners reached through a subcommand (npm exec, pnpm dlx, yarn dlx, bun x).
+//   global: options before the subcommand. npm and pnpm also read the subcommand's options there
+//   (npm -c '<cmd>' exec, pnpm -c exec '<cmd>', pnpm --package <pkg> dlx …), so global includes them.
 const RUNNERS = {
-  npm: { global: { short: "Cw", long: ["--prefix", "--workspace", "--registry", "--cache", "--userconfig", "--loglevel"] }, sub: { exec: NPM_EXEC, x: NPM_EXEC } },
-  pnpm: { global: { short: "CF", long: ["--dir", "--filter"] }, sub: { dlx: PNPM_DLX, exec: { short: "F", long: ["--filter", "--resume-from"], shellMode: ["c", "--shell-mode"] } } },
-  yarn: { global: { long: ["--cwd"] }, sub: { dlx: { short: "p", long: ["--package"], pkg: true }, exec: {} } },
+  npm: { global: { ...NPM_EXEC, short: "Cpcw" }, sub: { exec: NPM_EXEC, x: NPM_EXEC } },
+  pnpm: { global: { short: "CF", long: ["--dir", ...PNPM_DLX.long, ...PNPM_EXEC.long] }, sub: { dlx: PNPM_DLX, exec: PNPM_EXEC } },
+  yarn: { global: { long: ["--cwd"] }, sub: { dlx: { short: "p", long: ["--package"], pkg: true }, exec: { shellWords: true } } },
   bun: { global: { long: ["--cwd"] }, sub: { x: BUNX } },
 };
 
 // Commands that run the rest of their words as a command.
 //   short: option letters that take a value; long: long options that take a value (unless written --opt=value);
 //   script: options whose value is a command string it runs (env -S, npx -c);
-//   shellMode: options that make it run the rest of its words as a command string (pnpm dlx -c);
+//   shellMode: options that make it run the rest of its words as a command string (pnpm -c dlx);
+//   shellWords: it always runs the rest of its words as a command string (yarn 4 exec);
 //   positional: words between the options and the command (1, or "number" for an optional numeric one);
 //   pidMode: options that make it act on existing PIDs instead of running a command;
 //   pkg: the command is a package spec that can carry a version
@@ -203,21 +207,24 @@ export function unwrap(c) {
     }
     let spec = Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : null;
     let start = i + 1;
+    let pre = null; // options before a runner's subcommand
     if (!spec && Object.hasOwn(RUNNERS, name)) {
       // npm exec, pnpm dlx, yarn dlx, bun x, …: skip global options, then the subcommand
       const g = skipOptions(words, start, RUNNERS[name].global);
       const sub = RUNNERS[name].sub;
-      if (Object.hasOwn(sub, words[g.i] ?? "")) (spec = sub[words[g.i]]), (start = g.i + 1);
+      if (Object.hasOwn(sub, words[g.i] ?? "")) (spec = sub[words[g.i]]), (start = g.i + 1), (pre = g);
     }
     if (!spec) break;
     const r = skipOptions(words, start, spec);
-    if (spec.pidMode?.some((o) => r.seen.has(o))) return out;
+    const seen = pre ? new Set([...pre.seen, ...r.seen]) : r.seen;
+    const split = r.split ?? pre?.split ?? null;
+    if (spec.pidMode?.some((o) => seen.has(o))) return out;
     i = r.i;
-    if (r.split !== null) {
-      out.scripts.push([r.split, ...words.slice(i)].join(" "));
+    if (split !== null) {
+      out.scripts.push([split, ...words.slice(i)].join(" "));
       return out;
     }
-    if (spec.shellMode?.some((o) => r.seen.has(o))) {
+    if (spec.shellWords || spec.shellMode?.some((o) => seen.has(o))) {
       out.scripts.push(words.slice(i).join(" "));
       return out;
     }
@@ -347,6 +354,9 @@ function checkCommand(c, flow, cfg, ctx, depth, cmds) {
     if (u.viaXargs) return `${name} gets its targets from xargs: a PID, a name or a port`;
     const targets = [];
     for (let k = 0; k < args.length; k++) {
+      // fkill passes a number to `kill -- <n>`, so -1 and 0 act as in kill; -<pgid> passes like kill -- -<pgid>
+      if (args[k] === "-1") return `${name} -1 signals every process you are allowed to signal`;
+      if (/^-?0$/.test(args[k])) return `${name} 0 signals every process in the current process group`;
       if (args[k] === "-t" || args[k] === "--force-after-timeout") k++;
       else if (!args[k].startsWith("-")) targets.push([args[k], argInfo[k]]);
     }

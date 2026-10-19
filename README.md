@@ -55,13 +55,13 @@ Blocked by default:
 - `fuser -k …`, `fuser --kill …`
 - npm port killers, installed or run through a package runner (`npx`, `npm exec`, `pnpm dlx`, `pnpm exec`, `pnpx`, `bunx`, `bun x`, `yarn dlx`, `yarn exec`), also with a version (`kill-port@2`) or `--package`:
   - `kill-port …` and `kill-port-process …`: `npx kill-port 3000`, `npx -y kill-port 3000 5173`, `pnpm dlx kill-port 3000`, `kill-port --port 3000`. `kill-port` alone or with only `--help`, `--version` or `--verbose` passes.
-  - `fkill`/`fkill-cli` with a port (`fkill :3000`) or a name (`fkill node`, which kills like `pkill`). `fkill <pid>` passes.
+  - `fkill`/`fkill-cli` with a port (`fkill :3000`), a name (`fkill node`, which kills like `pkill`), `-1` or `0` (as with `kill`). `fkill <pid>` passes.
 - Only for units you list in `KILL_GUARD_UNITS`:
   - `systemctl stop|restart|try-restart|reload-or-restart|try-reload-or-restart|reload-or-try-restart|force-reload|kill|disable|mask|isolate …`
   - `service <unit> stop|restart|try-restart|force-reload|condrestart|--full-restart`
   - `launchctl stop|kill|bootout|unload|remove|disable …` and `launchctl kickstart -k …`
 
-How it reads a command: a small shell parser finds what runs in command position. It looks past shell keywords (`if … then`, `for … do`, `{ …; }`, `!`), variable assignments, redirections and wrappers (`sudo -u USER`, `doas`, `env`, `nice`, `ionice`, `chrt`, `taskset`, `timeout`, `stdbuf`, `nohup`, `setsid`, `time`, `exec`, `command`, `runuser`, `xargs`, `watch`, and the package runners above). It checks the command strings given to `bash -c`/`sh -c`/`zsh -c`, `eval`, `su -c`, `trap`, `watch`, `env -S`, `npx -c` and `pnpm dlx -c`, heredocs, here-strings and `echo … |` fed to a shell, and command substitutions, including those inside double quotes and unquoted heredocs (the shell runs them).
+How it reads a command: a small shell parser finds what runs in command position. It looks past shell keywords (`if … then`, `for … do`, `{ …; }`, `!`), variable assignments, redirections and wrappers (`sudo -u USER`, `doas`, `env`, `nice`, `ionice`, `chrt`, `taskset`, `timeout`, `stdbuf`, `nohup`, `setsid`, `time`, `exec`, `command`, `runuser`, `xargs`, `watch`, and the package runners above). Runner options also count where npm and pnpm read them, before the subcommand (`npm --package <pkg> exec`, `pnpm -c exec`). It checks the command strings given to `bash -c`/`sh -c`/`zsh -c`, `eval`, `su -c`, `trap`, `watch`, `env -S`, `npx -c`/`npm -c … exec`, `pnpm -c exec`/`pnpm dlx -c` and `yarn exec` (yarn 4 runs its argument as shell code), heredocs, here-strings and `echo … |` fed to a shell, and command substitutions, including those inside double quotes and unquoted heredocs (the shell runs them).
 
 Allowed: `kill <pid>`, `kill "$(cat server.pid)"`, `fkill <pid>`, `kill $!`, `kill %1`, `kill -1 <pid>` (SIGHUP to one process), `kill -- -<pgid>` (a process group you name, like a PID you name), and commands that only mention these words: `echo 'pkill node'`, `echo "kill $(pgrep node)"` (it only runs `pgrep`), `git log --grep pkill`, `command -v pkill`, a quoted heredoc written to a file.
 

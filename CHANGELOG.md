@@ -1,13 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 (2026-10-19)
 
 ### kill-guard
 
 Added:
 
-- npm port killers are blocked, like `fuser -k`: they kill whatever listens on a port without naming it. This covers `kill-port` and `kill-port-process`, run directly (`kill-port 3000`, `./node_modules/.bin/kill-port 3000`) or through a package runner: `npx`, `npm exec`/`npm x`, `pnpm dlx`, `pnpm exec`, `pnpx`, `bunx`, `bun x`, `yarn dlx`, `yarn exec`. Runner options (`npx -y`, `-p <pkg>`, `--package=<pkg>`), versions (`kill-port@2`) and the command strings of `npx -c` and `pnpm dlx -c` are followed. `kill-port` with no port (`npx kill-port --help`) passes.
-- `fkill`/`fkill-cli` with a port (`fkill :3000`) or a name (`fkill node`) is blocked. A name kills like `pkill`, so `KILL_GUARD_PATTERN` narrows it the same way. `fkill <pid>` passes.
+- npm port killers are blocked, like `fuser -k`: they kill whatever listens on a port without naming it. This covers `kill-port` and `kill-port-process`, run directly (`kill-port 3000`, `./node_modules/.bin/kill-port 3000`) or through a package runner: `npx`, `npm exec`/`npm x`, `pnpm dlx`, `pnpm exec`, `pnpx`, `bunx`, `bun x`, `yarn dlx`, `yarn exec`. Runner options are followed, also where npm and pnpm read them before the subcommand: `npx -y`, `-p <pkg>`, `--package=<pkg>`, `npm --package <pkg> exec`, `pnpm --package <pkg> dlx`. So are versions (`kill-port@2`) and the command strings that runners run in a shell: `npx -c '<cmd>'`, `npm -c '<cmd>' exec`, `pnpm -c exec '<cmd>'`, `pnpm dlx -c '<cmd>'`, and `yarn exec '<cmd>'` (yarn 4). `kill-port` with no port (`npx kill-port --help`) passes.
+- `fkill`/`fkill-cli` with a port (`fkill :3000`) or a name (`fkill node`) is blocked. A name kills like `pkill`, so `KILL_GUARD_PATTERN` narrows it the same way. `fkill -1` and `fkill 0` are blocked like `kill -1` and `kill 0`, because fkill passes a number to `kill -- <n>`. `fkill <pid>` and `fkill -<pgid>` pass.
 
 Changed:
 

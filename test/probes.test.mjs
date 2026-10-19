@@ -140,6 +140,28 @@ const probes = {
     ["fkill node", 2, { KILL_GUARD_PATTERN: "node" }],
     ["fkill vite", 0, { KILL_GUARD_PATTERN: "node" }],
   ],
+  // pre-merge review of #2: npm and pnpm read runner options before the subcommand, fkill passes a number to
+  // `kill -- <n>`, and yarn 4 exec runs its argument as shell code
+  "runner options before the subcommand, fkill -1 and 0, yarn exec strings": [
+    ["pnpm -c exec 'kill-port 3000'", 2],
+    ["pnpm --shell-mode exec 'kill-port 3000'", 2],
+    ["pnpm -c dlx 'kill-port 3000'", 2],
+    ["pnpm --package kill-port -c dlx 'kill-port 3000'", 2],
+    ["pnpm --package kill-port dlx kill-port 3000", 2],
+    ["pnpm -c exec 'pkill node'", 2],
+    ["npm -c 'kill-port 3000' exec", 2],
+    ["npm --call 'kill-port 3000' exec", 2],
+    ["npm --call='kill-port 3000' x", 2],
+    ["npm --package kill-port exec kill-port 3000", 2],
+    ["fkill -1", 2],
+    ["fkill 0", 2],
+    ["fkill -f -1", 2],
+    ["fkill -0", 2],
+    ["yarn exec 'kill-port 3000'", 2],
+    ["yarn exec 'npx kill-port 3000'", 2],
+    ['yarn exec "pkill node"', 2],
+    ["fkill -1234", 0],
+  ],
   "protected units": [
     ["service foo restart", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
     ["sudo service foo stop", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
@@ -212,6 +234,13 @@ const ordinary = [
   "npm i -D kill-port fkill-cli",
   "fkill 1234",
   "fkill --help",
+  "pnpm -c exec 'echo hi'",
+  "pnpm -r exec eslint .",
+  "pnpm --package typescript dlx tsc",
+  "npm --package typescript exec tsc",
+  "npm -c 'npm test' exec",
+  "yarn exec tsc",
+  "yarn exec 'echo hi; ls'",
   "echo 'npx kill-port 3000'",
 ];
 
