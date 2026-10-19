@@ -28,6 +28,43 @@ const blocked = [
   "ps aux | grep node | xargs -r kill -9",
   "lsof -ti:3000 | xargs kill -9",
   "fuser -k 3000/tcp",
+  // wrappers and launchers
+  "setsid pkill node",
+  "stdbuf -oL pkill node",
+  "ionice -c3 pkill node",
+  "chrt -f 10 pkill node",
+  "taskset -c 0 pkill node",
+  "time -p pkill node",
+  "exec pkill node",
+  "doas -u root killall node",
+  "runuser -u app -- pkill node",
+  "/usr/bin/env pkill node",
+  "su -c 'pkill node' root",
+  "trap 'pkill -f vite' EXIT",
+  "env -S 'pkill node'",
+  "zsh -lc 'pkill node'",
+  "bash -o pipefail -c 'pkill node'",
+  'echo "pkill node" | sh',
+  "bash <<< 'pkill node'",
+  "cat <<EOF | bash\npkill node\nEOF",
+  "f() { pkill node; }",
+  "( pkill node )",
+  "cat <<EOF > notes.txt\nstopped: $(pkill node)\nEOF",
+  // PIDs found by name, pattern or port, through variables, arrays, loops and read
+  "pids=($(pgrep x)); kill ${pids[@]}",
+  "local pid=$(pgrep x); kill $pid",
+  "pgrep node | while read p; do kill $p; done",
+  "while read p; do kill $p; done < <(pgrep node)",
+  'read -r pid <<< "$(pgrep node)"; kill $pid',
+  'PID=$(pgrep node); bash -c "kill $PID"',
+  "pgrep node | xargs -I{} sh -c 'kill {}'",
+  "lsof -i :3000 | awk 'NR>1{print $2}' | xargs kill",
+  "kill -9 $(ps aux | grep '[n]ode' | awk '{print $2}')",
+  "kill $(fuser 3000/tcp 2>/dev/null)",
+  // kill -1 / kill 0
+  "kill -s KILL -1",
+  "kill -9 -- -1",
+  "kill 0",
 ];
 const allowed = [
   "kill 12345",
@@ -63,6 +100,8 @@ test("KILL_GUARD_PATTERN narrows pkill/killall to matching patterns", () => {
   for (const c of ["kill $(pgrep vite)", "fuser -k 5173/tcp"]) assert.ok(blockReason(c, cfg), `should block: ${c}`);
   // an invalid regex falls back to blocking every pattern kill
   assert.ok(blockReason("pkill vite", configFromEnv({ KILL_GUARD_PATTERN: "(" })));
+  // a pattern only known when the command runs cannot be checked, so it is blocked
+  for (const c of ['pkill -f "$NAME"', "for p in vite web; do pkill $p; done", "echo vite | xargs pkill", "pkill $(cat name.txt)"]) assert.ok(blockReason(c, cfg), `should block: ${c}`);
 });
 
 test("KILL_GUARD_UNITS protects systemd units and launchd labels", () => {
@@ -79,6 +118,12 @@ test("KILL_GUARD_UNITS protects systemd units and launchd labels", () => {
     "launchctl stop myapp",
     "launchctl bootout gui/501/myapp",
     "launchctl kill SIGTERM gui/501/myapp",
+    "launchctl unload -w ~/Library/LaunchAgents/myapp.plist",
+    "launchctl kickstart -kp gui/501/myapp",
+    "systemctl --user reload-or-restart myapp",
+    "systemctl restart myapp@worker-1",
+    "service myapp --full-restart",
+    "/usr/sbin/service myapp condrestart",
   ];
   const allowedUnits = [
     "systemctl --user status myapp",
@@ -87,14 +132,41 @@ test("KILL_GUARD_UNITS protects systemd units and launchd labels", () => {
     "systemctl --user restart other",
     "launchctl list myapp",
     "launchctl stop other",
+    "launchctl kickstart gui/501/myapp",
+    "service myapp status",
+    "service other stop",
+    "systemctl -H myapp stop other",
   ];
   for (const c of blockedUnits) assert.ok(blockReason(c, cfg), `should block: ${c}`);
   for (const c of allowedUnits) assert.equal(blockReason(c, cfg), null, `should allow: ${c}`);
 });
 
-test("fail closed: a command that is not a string is blocked", () => {
+test("a listed template instance protects only itself; a listed template protects every instance", () => {
+  const one = configFromEnv({ KILL_GUARD_UNITS: "worker@1" });
+  assert.ok(blockReason("systemctl stop worker@1.service", one));
+  assert.equal(blockReason("systemctl stop worker@2", one), null);
+  assert.ok(blockReason("systemctl stop worker@2", configFromEnv({ KILL_GUARD_UNITS: "worker" })));
+});
+
+test("fail closed: a command that is not a string is blocked; nesting is capped", () => {
   assert.ok(blockReason(undefined));
   assert.ok(blockReason(42));
+  let deep = "ls";
+  for (let n = 0; n < 12; n++) deep = `bash -c ${JSON.stringify(deep)}`;
+  assert.match(blockReason(deep), /nests shells too deeply/);
+  let ok = "ls";
+  for (let n = 0; n < 4; n++) ok = `bash -c ${JSON.stringify(ok)}`;
+  assert.equal(blockReason(ok), null);
+});
+
+test("never throws: odd and malformed commands get a verdict", () => {
+  const chars = ["pkill ", "kill ", "$(", ")", "`", '"', "'", "|", "xargs ", "for p in ", "; do ", "; done", "<<EOF\n", "\nEOF\n", "$p ", "-1 ", "bash -c ", "sudo -u ", "{ ", " }", "&", "<(", "pgrep x"];
+  let seed = 7;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  for (let n = 0; n < 3000; n++) {
+    const c = Array.from({ length: 1 + Math.floor(rand() * 12) }, () => chars[Math.floor(rand() * chars.length)]).join("");
+    assert.doesNotThrow(() => blockReason(c), JSON.stringify(c));
+  }
 });
 
 const runGuard = (input, env = {}) => spawnSync(process.execPath, [GUARD], { input, encoding: "utf8", env: { ...process.env, KILL_GUARD: "", KILL_GUARD_PATTERN: "", KILL_GUARD_UNITS: "", KILL_GUARD_HINT: "", ...env } });

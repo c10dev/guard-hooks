@@ -153,6 +153,89 @@ test("--ref: reads files at the git ref, not the working tree", () => {
   }
 });
 
+const gitIn = (root) => (...a) =>
+  execFileSync("git", ["-C", root, ...a], { stdio: "ignore", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+
+test("--ref: hints for a change on the ref point at the ref, not at the working tree", () => {
+  const s = sandbox();
+  try {
+    const git = gitIn(s.root);
+    writeFileSync(join(s.root, "CLAUDE.md"), "# committed on main\n");
+    git("init", "-q", "-b", "main");
+    git("add", ".");
+    git("commit", "-qm", "one");
+    git("branch", "other");
+    const ref = ["--ref", "other"];
+    run(args("start", s.root, ref), input("SessionStart", { source: "startup" }), { dir: s.dir });
+    git("checkout", "-q", "other");
+    writeFileSync(join(s.root, "CLAUDE.md"), "# committed on main\n" + Array.from({ length: 300 }, (_, i) => `- rule ${i}`).join("\n") + "\n");
+    git("commit", "-qam", "300 lines on other");
+    git("checkout", "-q", "main");
+    const ctx = JSON.parse(run(args("check", s.root, ref), input("UserPromptSubmit"), { dir: s.dir })).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.split("\n").length <= MAX_DIFF_LINES + 3);
+    assert.match(ctx, new RegExp(`- CLAUDE\\.md: the diff is too long and was cut\\. Run \`git -C ${s.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} show other:CLAUDE\\.md\` to read it\\.`));
+    assert.ok(!/Read tool/.test(ctx));
+    // the same for a file whose previous content is unknown, and for one deleted on the ref
+    assert.match(contextOf([{ file: "AGENTS.md", before: undefined, after: "x", at: "ref" }], "/r", MAX_DIFF_LINES, "origin/main"), /Run `git -C \/r show origin\/main:AGENTS\.md` to read it/);
+    assert.match(contextOf([{ file: "AGENTS.md", before: "x", after: null, at: "ref" }], "/r", MAX_DIFF_LINES, "origin/main"), /AGENTS\.md: the file was deleted on origin\/main\./);
+  } finally {
+    s.done();
+  }
+});
+
+test("--ref: a ref that does not resolve records nothing; once it appears, the first check is a quiet baseline", () => {
+  const s = sandbox();
+  try {
+    const git = gitIn(s.root);
+    writeFileSync(join(s.root, "CLAUDE.md"), "# committed on main\n");
+    git("init", "-q", "-b", "main");
+    git("add", ".");
+    git("commit", "-qm", "one");
+    writeFileSync(join(s.root, "CLAUDE.md"), "# committed on main\nlocal draft line\n"); // uncommitted
+    const ref = ["--ref", "origin/main"];
+    assert.equal(run(args("start", s.root, ref), input("SessionStart", { source: "startup" }), { dir: s.dir }), null);
+    assert.equal(readRecord(s.dir, "sess-1"), null);
+    assert.equal(run(args("check", s.root, ref), input("UserPromptSubmit"), { dir: s.dir }), null);
+    assert.equal(readRecord(s.dir, "sess-1"), null);
+    assert.deepEqual(statusOf({ root: s.root, ref: "origin/main", files: ["CLAUDE.md"], acked: {} }), { current: false, behind: [], unknown: ["CLAUDE.md"] });
+    git("update-ref", "refs/remotes/origin/main", "main");
+    assert.equal(run(args("check", s.root, ref), input("UserPromptSubmit"), { dir: s.dir }), null, "no false diff when the ref appears");
+    assert.ok(readRecord(s.dir, "sess-1"));
+    git("commit", "-qam", "two");
+    git("update-ref", "refs/remotes/origin/main", "main");
+    assert.match(run(args("check", s.root, ref), input("UserPromptSubmit"), { dir: s.dir }), /\+local draft line/);
+    // a startup while the ref is missing drops the old baseline instead of keeping a stale one
+    git("update-ref", "-d", "refs/remotes/origin/main");
+    run(args("start", s.root, ref), input("SessionStart", { source: "startup" }), { dir: s.dir });
+    assert.equal(readRecord(s.dir, "sess-1"), null);
+  } finally {
+    s.done();
+  }
+});
+
+test("--ref: a tracked file deleted on the ref is reported even while it is still on disk", () => {
+  const s = sandbox();
+  try {
+    const git = gitIn(s.root);
+    git("init", "-q", "-b", "main");
+    git("add", ".");
+    git("commit", "-qm", "one");
+    git("branch", "other");
+    const ref = ["--ref", "other"];
+    run(args("start", s.root, ref), input("SessionStart", { source: "startup" }), { dir: s.dir });
+    git("checkout", "-q", "other");
+    git("rm", "-q", "AGENTS.md");
+    git("commit", "-qm", "drop AGENTS.md");
+    git("checkout", "-q", "main");
+    assert.ok(existsSync(join(s.root, "AGENTS.md")));
+    const ctx = JSON.parse(run(args("check", s.root, ref), input("UserPromptSubmit"), { dir: s.dir })).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /changed since this session started: AGENTS\.md\./);
+    assert.match(ctx, /- AGENTS\.md: the file was deleted on other\./);
+  } finally {
+    s.done();
+  }
+});
+
 test("cleanup removes records unchecked for 7+ days and orphan blobs; statusOf", () => {
   const s = sandbox();
   try {

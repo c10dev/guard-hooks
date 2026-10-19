@@ -1,0 +1,194 @@
+// Every kill-guard probe from the 0.1.0 verification (plus its controls) with the exit code the hook must give,
+// and a corpus of ordinary agent commands that must keep passing. Each case runs the real hook process.
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const GUARD = fileURLToPath(new URL("../hooks/kill-guard.mjs", import.meta.url));
+const CLEAN = { KILL_GUARD: "", KILL_GUARD_PATTERN: "", KILL_GUARD_UNITS: "", KILL_GUARD_HINT: "" };
+const runGuard = (input, env = {}) => spawnSync(process.execPath, [GUARD], { input, encoding: "utf8", env: { ...process.env, ...CLEAN, ...env } });
+const tool = (tool_name, tool_input) => JSON.stringify({ tool_name, tool_input });
+
+// [command, expected exit code, env]
+const probes = {
+  "direct exit codes (1d)": [
+    ["pkill -f node", 2],
+    ["killall node", 2],
+    ["kill $(lsof -t -i:3000)", 2],
+    ["kill 12345", 0],
+    ["systemctl stop foo", 0],
+    ["systemctl stop foo", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["systemctl stop foo.service", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["sudo systemctl --user restart foo", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["pkill -f node", 0, { KILL_GUARD: "off" }],
+    ["pkill -x zzznonexistentzzz", 2],
+    ["echo ok", 0],
+  ],
+  "README examples (1e)": [
+    ['kill "$(cat server.pid)"', 0],
+    ["echo 'pkill node'", 0],
+    ["git log --grep pkill", 0],
+    ["cat <<EOF > notes.txt\npkill node\nEOF", 0],
+    ["kill `pidof node`", 2],
+    ["kill $(pgrep -f vite)", 2],
+    ["pgrep node | xargs kill", 2],
+    ["ps aux | grep node | xargs kill", 2],
+    ["lsof -ti:3000 | xargs kill", 2],
+    ["fuser -k 3000/tcp", 2],
+    ["launchctl bootout gui/501/com.foo", 2, { KILL_GUARD_UNITS: "com.foo" }],
+    ["launchctl stop com.foo", 0],
+    // 0.1.0 matched `kill $(pgrep …)` on the raw text and blocked this; it only runs pgrep, so it passes now
+    ['echo "kill $(pgrep node)"', 0],
+  ],
+  "KILL_GUARD_PATTERN (1f)": [
+    ["pkill -f node", 2, { KILL_GUARD_PATTERN: "node|server/index|myapp" }],
+    ["pkill -x zzznonexistentzzz", 0, { KILL_GUARD_PATTERN: "node|server/index|myapp" }],
+    ['pkill -f "node server/index.ts"', 2, { KILL_GUARD_PATTERN: "server/index" }],
+    ["pkill -x zzz", 2, { KILL_GUARD_PATTERN: "(" }],
+    ["kill $(pgrep zzz)", 2, { KILL_GUARD_PATTERN: "node" }],
+  ],
+  "shell reserved words": [
+    ["{ pkill node; }", 2],
+    ["if true; then pkill node; fi", 2],
+    ["for p in a b; do pkill $p; done", 2],
+    ["while false; do killall node; done", 2],
+    ["! pkill node", 2],
+    ["pkill node", 2],
+    ["if true; then pkill -x zzznonexistentzzz; fi; echo rc=$?", 2],
+    ["if pgrep -x foo >/dev/null; then pkill foo; fi", 2],
+  ],
+  "command substitution inside double quotes": [
+    ['echo "$(pkill node)"', 2],
+    ['x="$(killall node)"', 2],
+    ['echo "`pkill node`"', 2],
+    ['echo "done: $(fuser -k 3000/tcp)"', 2],
+    ["echo $(pkill node)", 2],
+  ],
+  "wrappers and launchers": [
+    ["sudo -u root pkill node", 2],
+    ["env -u FOO pkill node", 2],
+    ["nice -n 10 pkill node", 2],
+    ["timeout 5 pkill node", 2],
+    ["echo node | xargs pkill", 2],
+    ['bash -c "pkill node"', 2],
+    ["sh -c 'killall node'", 2],
+    ['eval "pkill node"', 2],
+    ["watch -n 1 pkill node", 2],
+    ["xargs -a names.txt pkill", 2],
+    ["bash <<'EOF'\npkill node\nEOF", 2],
+    ["sh <<EOF\nkillall node\nEOF", 2],
+    ["sudo pkill node", 2],
+    ["sudo -n pkill node", 2],
+  ],
+  "kill -1 and kill 0": [
+    ["kill -9 -1", 2],
+    ["kill -- -1", 2],
+    ["kill -TERM 0", 2],
+  ],
+  "fuser --kill and xargs options with values": [
+    ["fuser --kill 3000/tcp", 2],
+    ["pgrep node | xargs -n 1 kill", 2],
+    ["pgrep node | xargs -I {} kill {}", 2],
+    ["pgrep node | xargs -I{} kill {}", 2],
+    ["pgrep node | xargs -r kill -9", 2],
+  ],
+  "false positives (1k)": [
+    ["cat /tmp/ps.pids | xargs kill", 0],
+    ["man pkill", 0],
+    ["which pkill", 0],
+    ["grep -rn pkill .", 0],
+    ["command -v pkill", 0],
+    ["command -V killall", 0],
+    ["type pkill", 0],
+  ],
+  "PIDs passed through a variable or loop": [
+    ["PID=$(lsof -ti:3000); kill $PID", 2],
+    ["pids=$(pgrep -f vite) && kill $pids", 2],
+    ["for pid in $(pgrep node); do kill $pid; done", 2],
+    ["kill -9 $(lsof -ti:3000)", 2],
+  ],
+  "protected units": [
+    ["service foo restart", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
+    ["sudo service foo stop", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
+    ["launchctl kickstart -k gui/501/com.foo", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
+    ["systemctl force-reload foo", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
+    ["systemctl -s KILL kill foo", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["systemctl -H host stop foo", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["systemctl stop foo@1", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["systemctl --signal=KILL kill foo", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["systemctl restart foo", 2, { KILL_GUARD_UNITS: "foo" }],
+    ["launchctl stop com.foo", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
+  ],
+};
+
+// Ordinary commands an agent writes; none of them may be blocked
+const ordinary = [
+  "kill $!",
+  "kill %1",
+  "kill -- -$PGID",
+  "kill -- -12345",
+  "kill -1 1234",
+  "kill -l",
+  "kill -0 $SERVER_PID",
+  "kill -9 12345",
+  'kill "$(cat /tmp/x.pid)"; sleep 1; ps aux | grep node',
+  "kill $(jobs -p)",
+  "node server.js & echo $! > /tmp/dev.pid",
+  "trap 'kill $PID' EXIT",
+  'for f in *.md; do wc -l "$f"; done',
+  'while read -r l; do echo "$l"; done < file.txt',
+  'echo "$(date)"',
+  'eval "$(ssh-agent -s)"',
+  "timeout 30 npm test",
+  "watch -n1 git status",
+  "sudo -u postgres psql -c 'select 1'",
+  "env -u FOO node x.js",
+  "nice -n 10 npm run build",
+  'bash -c "echo hi"',
+  "sh -c 'npm test && echo ok'",
+  "bash <<'EOF'\necho hi\nEOF",
+  "jq '.kill' data.json",
+  "./scripts/kill-dev.sh",
+  "case $x in kill) echo k;; esac",
+  "xargs -n 1 echo < list.txt",
+  "find . -name '*.pid' | xargs cat",
+  "pgrep -f vite",
+  "pgrep -f vite && echo running",
+  "if pgrep -x foo >/dev/null; then echo up; fi",
+  "lsof -i :3000",
+  "ps aux | grep node | head",
+  "x=$((1 + 2)); echo $x",
+  'git commit -m "kill-guard: block pkill $(pgrep) shapes"',
+  "python3 - <<EOF\nimport os\nprint(os.getpid())\nEOF",
+  "systemctl --user status myapp",
+  "journalctl --user -u myapp -f",
+];
+
+for (const [group, cases] of Object.entries(probes)) {
+  test(`probes: ${group}`, () => {
+    for (const [command, expected, env] of cases) {
+      const r = runGuard(tool("Bash", { command }), env);
+      assert.equal(r.status, expected, `${JSON.stringify(command)} ${env ? JSON.stringify(env) : ""} → exit ${r.status}: ${r.stderr}`);
+      if (expected === 2) assert.match(r.stderr, /^KILL GUARD: blocked because /);
+    }
+  });
+}
+
+test("ordinary agent commands pass", () => {
+  for (const command of ordinary) {
+    const r = runGuard(tool("Bash", { command }));
+    assert.equal(r.status, 0, `${JSON.stringify(command)} → exit ${r.status}: ${r.stderr}`);
+  }
+});
+
+test("Monitor: a command is checked like Bash; a call without one (e.g. a ws source) passes", () => {
+  assert.equal(runGuard(tool("Monitor", { command: "pkill node", description: "x", timeout_ms: 30000 })).status, 2);
+  assert.equal(runGuard(tool("Monitor", { command: "pkill -x zzznonexistentzzz; echo pkill_exit=$?", description: "x", timeout_ms: 30000 })).status, 2);
+  assert.equal(runGuard(tool("Monitor", { command: "tail -f /tmp/build.log", description: "x" })).status, 0);
+  assert.equal(runGuard(tool("Monitor", { ws: { url: "wss://events.example.com/stream" }, description: "deploy events", timeout_ms: 30000 })).status, 0);
+  // still fail-closed for Bash, and for input that names no tool
+  assert.equal(runGuard(tool("Bash", {})).status, 2);
+  assert.equal(runGuard("{}").status, 2);
+  assert.equal(runGuard("null").status, 2);
+});

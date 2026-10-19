@@ -6,8 +6,10 @@
 //                                         and mark the new hashes as acknowledged
 // Options (CLI flag, else env var, else default):
 //   --root <repo>       project root (default $CLAUDE_PROJECT_DIR, else the hook input's cwd)
-//   --ref <git ref>     RULES_DRIFT_REF    read files from this ref, e.g. origin/main. Files the ref does not have
-//                                          (untracked files) are read from the working tree. Default: working tree
+//   --ref <git ref>     RULES_DRIFT_REF    read files from this ref, e.g. origin/main. Files not under version control
+//                                          are read from the working tree; a tracked file the ref lacks counts as
+//                                          deleted. While the ref does not resolve, nothing is checked or recorded.
+//                                          Default: working tree
 //   --files a,b         RULES_DRIFT_FILES  comma-separated paths relative to the root. Default CLAUDE.md,AGENTS.md
 //   RULES_DRIFT=off     do nothing
 // Reads only the watched files, never the conversation transcript. No network.
@@ -54,19 +56,41 @@ export function parseArgs(argv, env = process.env) {
 // ---- reading ----
 export const sha = (text) => (text === null ? null : createHash("sha256").update(text).digest("hex"));
 
-// Current content of a watched file, or null when it does not exist (a missing file is a state too).
-// With a ref, the file at that ref; if the ref does not have it (untracked file), the working tree copy
-export function readSource(root, ref, file) {
-  if (ref) {
-    try {
-      return execFileSync("git", ["-C", root, "show", `${ref}:${file}`], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] });
-    } catch {}
-  }
+const git = (root, args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] });
+
+// The commit a ref points to, or null when it does not resolve (not a git repo, not fetched yet, a typo)
+export function resolveRef(root, ref) {
   try {
-    return readFileSync(join(root, file), "utf8");
+    return git(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).trim() || null;
   } catch {
     return null;
   }
+}
+
+// A watched file: { text, at }. text is null when the file does not exist (a missing file is a state too).
+// With a commit, the file at that commit (at: "ref"). A file not under version control is read from the working tree
+// (at: "worktree"); a tracked file the commit does not have counts as deleted.
+export function readAt(root, commit, file) {
+  if (commit) {
+    try {
+      return { text: git(root, ["show", `${commit}:${file}`]), at: "ref" };
+    } catch {}
+    try {
+      git(root, ["ls-files", "--error-unmatch", "--", file]);
+      return { text: null, at: "ref" };
+    } catch {}
+  }
+  try {
+    return { text: readFileSync(join(root, file), "utf8"), at: "worktree" };
+  } catch {
+    return { text: null, at: "worktree" };
+  }
+}
+
+// Current content of a watched file (null: it does not exist), or undefined when the ref does not resolve
+export function readSource(root, ref, file) {
+  const commit = ref ? resolveRef(root, ref) : null;
+  return ref && !commit ? undefined : readAt(root, commit, file).text;
 }
 
 // ---- diff (dependency-free line LCS, unified format) ----
@@ -116,18 +140,23 @@ export function unifiedDiff(oldText, newText, file, max = MAX_DIFF_LINES) {
 }
 
 // ---- the message given to the session ----
-// changes: [{file, before, after}] contents; before null = file did not exist, undefined = previous content unknown
-export function contextOf(changes, root, max = MAX_DIFF_LINES) {
+const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+// changes: [{file, before, after, at}] contents; before null = file did not exist, undefined = previous content unknown.
+// at "ref": the content came from the git ref, so the session is told to read it there, not in the working tree
+export function contextOf(changes, root, max = MAX_DIFF_LINES, ref = null) {
   const out = [`[rules-drift] Rules files changed since this session started: ${changes.map((c) => c.file).join(", ")}. Follow the changes below from now on.`];
   let budget = max;
   for (const c of changes) {
+    const fromRef = ref && c.at === "ref";
     const path = join(root, c.file);
+    const reread = fromRef ? `Run \`git -C ${shellQuote(root)} show ${shellQuote(`${ref}:${c.file}`)}\` to read it` : `Re-read ${path} with the Read tool`;
     if (c.after === null) {
-      out.push(`- ${c.file}: the file was deleted (${path}).`);
+      out.push(fromRef ? `- ${c.file}: the file was deleted on ${ref}.` : `- ${c.file}: the file was deleted (${path}).`);
       continue;
     }
     if (c.before === undefined) {
-      out.push(`- ${c.file}: no diff because the previous content is unknown. Re-read ${path} with the Read tool.`);
+      out.push(`- ${c.file}: no diff because the previous content is unknown. ${reread}.`);
       continue;
     }
     const d = budget > 2 ? unifiedDiff(c.before, c.after, c.file, budget) : { text: null, truncated: true };
@@ -135,7 +164,7 @@ export function contextOf(changes, root, max = MAX_DIFF_LINES) {
       out.push(d.text);
       budget -= d.text.split("\n").length;
     }
-    if (d.truncated) out.push(`- ${c.file}: the diff is too long and was ${d.text ? "cut" : "left out"}. Re-read ${path} with the Read tool.`);
+    if (d.truncated) out.push(`- ${c.file}: the diff is too long and was ${d.text ? "cut" : "left out"}. ${reread}.`);
   }
   return out.join("\n");
 }
@@ -210,8 +239,16 @@ export function run(args, input, { dir = stateDir(), now = Date.now(), env = pro
   if (!sessionId || !SESSION_RE.test(sessionId)) return null;
   const root = args.root || env.CLAUDE_PROJECT_DIR || input.cwd;
   if (!root || !args.files.length) return null;
+  const commit = args.ref ? resolveRef(root, args.ref) : null;
+  if (args.ref && !commit) {
+    // Nothing to compare against until the ref resolves. Keep no baseline from the working tree, so the first check
+    // after the ref appears records one quietly instead of reporting the difference as a rules change
+    if (args.mode === "start" && input.source !== "resume") rmSync(recordPath(dir, sessionId), { force: true });
+    return null;
+  }
   const at = new Date(now).toISOString();
-  const current = Object.fromEntries(args.files.map((f) => [f, readSource(root, args.ref, f)]));
+  const read = Object.fromEntries(args.files.map((f) => [f, readAt(root, commit, f)]));
+  const current = Object.fromEntries(args.files.map((f) => [f, read[f].text]));
   const baseline = () => ({ v: 1, sessionId, root, ref: args.ref, files: args.files, startedAt: at, checkedAt: at, acked: Object.fromEntries(args.files.map((f) => [f, sha(current[f])])) });
 
   if (args.mode === "start") {
@@ -237,7 +274,7 @@ export function run(args, input, { dir = stateDir(), now = Date.now(), env = pro
   if (input.hook_event_name === "PostToolUse" && now - Date.parse(rec.checkedAt) < CHECK_EVERY_MS) return null;
   const changes = args.files
     .filter((f) => f in rec.acked && rec.acked[f] !== sha(current[f]))
-    .map((f) => ({ file: f, before: readBlob(dir, rec.acked[f]), after: current[f] }));
+    .map((f) => ({ file: f, before: readBlob(dir, rec.acked[f]), after: current[f], at: read[f].at }));
   const acked = { ...rec.acked };
   for (const f of args.files) {
     if (!(f in acked)) {
@@ -249,18 +286,21 @@ export function run(args, input, { dir = stateDir(), now = Date.now(), env = pro
   for (const c of changes) saveBlob(dir, c.after);
   writeRecord(dir, { ...rec, files: args.files, checkedAt: at, acked, ...(changes.length ? { changedAt: at } : {}) });
   if (!changes.length) return null;
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: input.hook_event_name || "UserPromptSubmit", additionalContext: contextOf(changes, root) } });
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: input.hook_event_name || "UserPromptSubmit", additionalContext: contextOf(changes, root, MAX_DIFF_LINES, args.ref) } });
 }
 
 // ---- status helpers for external tools (e.g. a dashboard listing sessions) ----
-// Compare a session record's acknowledged hashes with the current files. behind = files that changed since
+// Compare a session record's acknowledged hashes with the current files. behind = files that changed since;
+// unknown = files that cannot be read because the record's ref does not resolve (then current is false)
 export function statusOf(rec, read = readSource) {
   const behind = [];
+  const unknown = [];
   for (const f of rec.files ?? Object.keys(rec.acked ?? {})) {
-    const now = sha(read(rec.root, rec.ref ?? null, f));
-    if ((rec.acked ?? {})[f] !== now) behind.push(f);
+    const text = read(rec.root, rec.ref ?? null, f);
+    if (text === undefined) unknown.push(f);
+    else if ((rec.acked ?? {})[f] !== sha(text)) behind.push(f);
   }
-  return { current: behind.length === 0, behind };
+  return unknown.length ? { current: false, behind, unknown } : { current: behind.length === 0, behind };
 }
 
 export function readRecords(dir = stateDir()) {
