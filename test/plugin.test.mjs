@@ -34,8 +34,9 @@ test("hooks.json: events, matchers, timeouts; only ${CLAUDE_PLUGIN_ROOT} paths a
     assert.equal(hooks[event][0].hooks[0].timeout, 5);
   }
   assert.equal(hooks.PostToolUse[0].matcher, "*");
-  assert.equal(hooks.PreToolUse[0].matcher, "Bash");
-  assert.match(commandOf("PreToolUse"), /"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/kill-guard\.mjs" \|\| exit 2$/);
+  assert.equal(hooks.PreToolUse[0].matcher, "Bash|Monitor");
+  // Claude Code puts the hook command in front of the block message, so it stays short and says nothing misleading
+  assert.equal(commandOf("PreToolUse"), '/bin/sh "${CLAUDE_PLUGIN_ROOT}/hooks/kill-guard.sh" || exit 2');
   const all = JSON.stringify(hooks);
   assert.ok(!/\/home\/|\/Users\/|\.nvm/.test(all), "no machine-specific paths");
 });
@@ -108,25 +109,44 @@ test("end to end: RULES_DRIFT_REF=origin/main and RULES_DRIFT_FILES from env; a 
     assert.match(ctx.additionalContext, /^\+rule 3 changed$/m);
     assert.equal(turn().stdout, "", "reported once");
 
-    // a big rewrite is cut at 150 lines with an instruction to re-read
+    // a big rewrite is cut at 150 lines with an instruction to read the file at the ref (the working tree lacks it)
     writeFileSync(join(repo, "docs/style.md"), doc(400).replace(/rule/g, "new rule"));
     push("rewrite");
     const big = turn();
     assert.equal(big.status, 0);
     const text = JSON.parse(big.stdout).hookSpecificOutput.additionalContext;
     assert.ok(text.split("\n").length <= 160, `diff not cut: ${text.split("\n").length} lines`);
-    assert.match(text, /Re-read .*docs\/style\.md with the Read tool/);
+    assert.ok(text.endsWith(`- docs/style.md: the diff is too long and was cut. Run \`git -C ${repo} show origin/main:docs/style.md\` to read it.`), text.slice(-200));
   }));
 
 const bash = (command) => JSON.stringify({ tool_name: "Bash", tool_input: { command } });
+const monitor = (tool_input) => JSON.stringify({ tool_name: "Monitor", tool_input });
 
 test("kill-guard command: blocks pkill (exit 2), allows ls, fails closed on broken input", () => {
   assert.equal(runHook("PreToolUse", { stdin: bash("ls") }).status, 0);
   const bad = runHook("PreToolUse", { stdin: bash('pkill -f "node server/index.ts"') });
   assert.equal(bad.status, 2);
-  assert.match(bad.stderr, /KILL GUARD/);
+  assert.match(bad.stderr, /^KILL GUARD: blocked because pkill/);
+  assert.ok(!/node was not found/.test(bad.stderr));
   assert.equal(runHook("PreToolUse", { stdin: "not json" }).status, 2);
 });
+
+test("kill-guard command: Monitor commands are checked; a Monitor call without a command passes", () => {
+  assert.equal(runHook("PreToolUse", { stdin: monitor({ command: "pkill -x zzznonexistentzzz; echo pkill_exit=$?", description: "x" }) }).status, 2);
+  assert.equal(runHook("PreToolUse", { stdin: monitor({ command: "tail -f /tmp/build.log", description: "x" }) }).status, 0);
+  assert.equal(runHook("PreToolUse", { stdin: monitor({ ws: { url: "wss://events.example.com/stream" }, description: "deploy events" }) }).status, 0);
+});
+
+test("kill-guard command: any failure of the check itself blocks (exit 2)", () =>
+  withDir((dir) => {
+    mkdirSync(join(dir, "hooks"));
+    writeFileSync(join(dir, "hooks/kill-guard.sh"), readFileSync(join(ROOT, "hooks/kill-guard.sh")));
+    writeFileSync(join(dir, "hooks/kill-guard.mjs"), "process.exit(1);\n");
+    const crashed = runHook("PreToolUse", { stdin: bash("ls"), env: { CLAUDE_PLUGIN_ROOT: dir } });
+    assert.equal(crashed.status, 2);
+    const missing = runHook("PreToolUse", { stdin: bash("ls"), env: { CLAUDE_PLUGIN_ROOT: join(dir, "nowhere") } });
+    assert.equal(missing.status, 2);
+  }));
 
 test("kill-guard command: node found via PATH works; no node → exit 2 with a clear message; KILL_GUARD=off → exit 0", () =>
   withDir((dir) => {

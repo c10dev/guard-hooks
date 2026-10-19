@@ -1,6 +1,6 @@
 {
   "name": "guard-hooks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Two dependency-free Claude Code hooks: rules-drift tells running sessions when CLAUDE.md/AGENTS.md change, kill-guard blocks killing processes by name or pattern.",
   "author": {
     "name": "C10",

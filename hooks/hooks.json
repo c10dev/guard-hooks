@@ -1,5 +1,5 @@
 {
-  "description": "rules-drift (SessionStart/UserPromptSubmit/PostToolUse, fail-open) and kill-guard (PreToolUse Bash, fail-closed)",
+  "description": "rules-drift (SessionStart/UserPromptSubmit/PostToolUse, fail-open) and kill-guard (PreToolUse Bash and Monitor, fail-closed)",
   "hooks": {
     "SessionStart": [
       {
@@ -37,11 +37,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Monitor",
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$KILL_GUARD\" = off ] && exit 0; command -v node >/dev/null 2>&1 || { echo 'KILL GUARD: node was not found on PATH, so Bash commands cannot be checked and are blocked. Install Node.js 18+, or set KILL_GUARD=off to turn the guard off.' >&2; exit 2; }; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kill-guard.mjs\" || exit 2",
+            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/hooks/kill-guard.sh\" || exit 2",
             "timeout": 5
           }
         ]
