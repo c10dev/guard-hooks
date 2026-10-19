@@ -162,6 +162,27 @@ const probes = {
     ['yarn exec "pkill node"', 2],
     ["fkill -1234", 0],
   ],
+  // re-check of #2 at 20728e4: yarn 4 exec runs only its first word as shell code and passes the rest as literal
+  // arguments (yarn 1 runs it as a command), and npm reads -p as --parseable, which takes no value
+  "yarn exec shell code and arguments, npm -p": [
+    ["yarn exec bash -c 'kill-port 3000'", 2],
+    ["yarn exec bash -c 'kill $(lsof -ti:3000)'", 2],
+    ["yarn exec bash -c 'kill -9 -1'", 2],
+    ["yarn exec sh -c 'fuser -k 3000/tcp'", 2],
+    ["yarn exec sudo bash -c 'kill-port 3000'", 2],
+    ["yarn exec su -c 'kill-port 3000'", 2],
+    ["yarn exec timeout 5 bash -c 'kill $(pgrep node)'", 2],
+    ["yarn exec -- bash -c 'kill-port 3000'", 2],
+    ["yarn exec -- bash -c 'kill $(lsof -ti:3000)'", 2],
+    ["yarn exec 'bash -c' 'kill-port 3000'", 2],
+    ["yarn --cwd web exec 'kill-port 3000'", 2],
+    ["yarn exec kill $(pgrep node)", 2],
+    ["npm -p exec kill-port 3000", 2],
+    ["npm -p x kill-port 3000", 2],
+    ["npm exec -p kill-port 3000", 2],
+    ["yarn exec echo 'a; pkill node'", 0],
+    ["yarn exec echo '$(pkill node)'", 0],
+  ],
   "protected units": [
     ["service foo restart", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
     ["sudo service foo stop", 2, { KILL_GUARD_UNITS: "foo,com.foo" }],
@@ -241,6 +262,15 @@ const ordinary = [
   "npm -c 'npm test' exec",
   "yarn exec tsc",
   "yarn exec 'echo hi; ls'",
+  "yarn exec 'echo A; echo B' extra",
+  'yarn exec node -e "console.log(1)"',
+  "yarn exec jest -t 'kills port (3000)'",
+  "yarn exec git commit -m 'fix: stop using pkill node'",
+  'yarn exec vitest run -t "fkill node"',
+  "yarn exec echo \"it's fine\"",
+  "npm -p ls",
+  "npm -C /tmp exec tsc",
+  "npm --call 'tsc -p .' exec",
   "echo 'npx kill-port 3000'",
 ];
 

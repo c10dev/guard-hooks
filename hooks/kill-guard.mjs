@@ -40,7 +40,9 @@ const MAX_DEPTH = 8; // bash -c / eval / heredoc nesting
 
 // Package runners: they run their package argument (a version, kill-port@2, is dropped), or with --package the
 // command after it. npx -c, pnpm -c dlx and yarn 4 exec run a command string in a shell.
-const NPM_EXEC = { short: "pcw", long: ["--package", "--call", "--workspace", "--cache", "--userconfig", "--registry", "--prefix", "--loglevel", "--shell", "--script-shell"], script: ["c", "--call"], pkg: true };
+const NPM_EXEC = { short: "cw", long: ["--package", "--call", "--workspace", "--cache", "--userconfig", "--registry", "--prefix", "--loglevel", "--shell", "--script-shell"], script: ["c", "--call"], pkg: true };
+// npx reads -p as --package; npm reads it as --parseable, which takes no value
+const NPX = { ...NPM_EXEC, short: "pcw" };
 const PNPM_DLX = { long: ["--package", "--allow-build", "--cpu", "--os", "--libc"], shellMode: ["c", "--shell-mode"], pkg: true };
 const PNPM_EXEC = { short: "F", long: ["--filter", "--resume-from"], shellMode: ["c", "--shell-mode"] };
 const BUNX = { short: "p", long: ["--package"], pkg: true };
@@ -48,7 +50,7 @@ const BUNX = { short: "p", long: ["--package"], pkg: true };
 //   global: options before the subcommand. npm and pnpm also read the subcommand's options there
 //   (npm -c '<cmd>' exec, pnpm -c exec '<cmd>', pnpm --package <pkg> dlx …), so global includes them.
 const RUNNERS = {
-  npm: { global: { ...NPM_EXEC, short: "Cpcw" }, sub: { exec: NPM_EXEC, x: NPM_EXEC } },
+  npm: { global: { ...NPM_EXEC, short: "Ccw" }, sub: { exec: NPM_EXEC, x: NPM_EXEC } },
   pnpm: { global: { short: "CF", long: ["--dir", ...PNPM_DLX.long, ...PNPM_EXEC.long] }, sub: { dlx: PNPM_DLX, exec: PNPM_EXEC } },
   yarn: { global: { long: ["--cwd"] }, sub: { dlx: { short: "p", long: ["--package"], pkg: true }, exec: { shellWords: true } } },
   bun: { global: { long: ["--cwd"] }, sub: { x: BUNX } },
@@ -58,7 +60,8 @@ const RUNNERS = {
 //   short: option letters that take a value; long: long options that take a value (unless written --opt=value);
 //   script: options whose value is a command string it runs (env -S, npx -c);
 //   shellMode: options that make it run the rest of its words as a command string (pnpm -c dlx);
-//   shellWords: it always runs the rest of its words as a command string (yarn 4 exec);
+//   shellWords: it runs its first word as shell code with the rest as literal arguments (yarn 4 exec), or as a
+//   command (yarn 1 exec), so both are checked;
 //   positional: words between the options and the command (1, or "number" for an optional numeric one);
 //   pidMode: options that make it act on existing PIDs instead of running a command;
 //   pkg: the command is a package spec that can carry a version
@@ -82,7 +85,7 @@ const WRAPPERS = {
   xargs: { short: "adEILnPs", long: ["--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"] },
   watch: { short: "nq", long: ["--interval", "--equexit"] },
   runuser: { short: "ugGsw", long: ["--user", "--group", "--supp-group", "--shell", "--whitelist-environment"] },
-  npx: NPM_EXEC,
+  npx: NPX,
   pnpx: PNPM_DLX,
   bunx: BUNX,
 };
@@ -90,6 +93,7 @@ const WRAPPERS = {
 const base = (w) => w.split("/").pop();
 // kill-port@2 → kill-port, @scope/pkg@latest → @scope/pkg
 const withoutVersion = (spec) => spec.replace(/^(@?[^@]+)@.*$/, "$1");
+const shellQuote = (w) => `'${w.replaceAll("'", "'\\''")}'`;
 
 export function configFromEnv(env = process.env) {
   let pattern = null;
@@ -224,10 +228,12 @@ export function unwrap(c) {
       out.scripts.push([split, ...words.slice(i)].join(" "));
       return out;
     }
-    if (spec.shellWords || spec.shellMode?.some((o) => seen.has(o))) {
+    if (spec.shellMode?.some((o) => seen.has(o))) {
       out.scripts.push(words.slice(i).join(" "));
       return out;
     }
+    // yarn exec: check the yarn 4 shell code here, and keep unwrapping the command that yarn 1 runs
+    if (spec.shellWords && i < words.length) out.scripts.push([words[i], ...words.slice(i + 1).map(shellQuote)].join(" "));
     if (spec.positional === 1) i++;
     else if (spec.positional === "number" && /^\d+$/.test(words[i] ?? "")) i++;
     if (name === "xargs") out.viaXargs = true;
