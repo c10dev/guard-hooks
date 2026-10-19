@@ -82,6 +82,11 @@ const blocked = [
   "fkill -t 5 :8080",
   "fkill $P",
   "pgrep node | xargs fkill",
+  // runner options before the subcommand, fkill -1 and 0, yarn 4 exec strings
+  "pnpm --package=is-number -c dlx 'kill-port 3000'",
+  "npm -c 'kill-port 3000' x",
+  "fkill -f -- -1",
+  "yarn exec 'pkill node; echo done'",
 ];
 const allowed = [
   "kill 12345",
@@ -100,6 +105,8 @@ const allowed = [
   "npm test",
   "npx kill-port --version",
   "fkill -f 1234 5678",
+  "fkill 1",
+  "fkill -f -4321",
   "npm ls kill-port",
   "pnpm add -D kill-port",
   "git commit -m 'block npx kill-port'",

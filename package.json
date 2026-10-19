@@ -1,6 +1,6 @@
 {
   "name": "guard-hooks",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Claude Code plugin: rules-drift and kill-guard hooks",
   "license": "Apache-2.0",
