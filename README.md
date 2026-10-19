@@ -3,7 +3,7 @@
 Two small Claude Code hooks for people who run several sessions at once. Plain Node.js, no dependencies.
 
 - **rules-drift** tells running sessions when `CLAUDE.md` or `AGENTS.md` changes, and gives them the diff.
-- **kill-guard** blocks Bash and Monitor commands that kill processes by name or pattern (`pkill`, `killall`, `kill $(pgrep …)`, `fuser -k`, …).
+- **kill-guard** blocks Bash and Monitor commands that kill processes by name or pattern (`pkill`, `killall`, `kill $(pgrep …)`, `fuser -k`, `npx kill-port`, …).
 
 Both started in [atc](https://github.com/c10dev/atc), a local control panel for many parallel Claude Code sessions, and were made general for this plugin.
 
@@ -53,14 +53,17 @@ Blocked by default:
 - `pgrep … | xargs kill`, `ps … | xargs kill`, `lsof -ti:3000 | xargs -n 1 kill` (`pgrep`, `pidof`, `ps`, `lsof` and `fuser` count as PID sources)
 - `kill -1` (every process you may signal) and `kill 0` (your whole process group)
 - `fuser -k …`, `fuser --kill …`
+- npm port killers, installed or run through a package runner (`npx`, `npm exec`, `pnpm dlx`, `pnpm exec`, `pnpx`, `bunx`, `bun x`, `yarn dlx`, `yarn exec`), also with a version (`kill-port@2`) or `--package`:
+  - `kill-port …` and `kill-port-process …`: `npx kill-port 3000`, `npx -y kill-port 3000 5173`, `pnpm dlx kill-port 3000`, `kill-port --port 3000`. `kill-port` alone or with only `--help`, `--version` or `--verbose` passes.
+  - `fkill`/`fkill-cli` with a port (`fkill :3000`) or a name (`fkill node`, which kills like `pkill`). `fkill <pid>` passes.
 - Only for units you list in `KILL_GUARD_UNITS`:
   - `systemctl stop|restart|try-restart|reload-or-restart|try-reload-or-restart|reload-or-try-restart|force-reload|kill|disable|mask|isolate …`
   - `service <unit> stop|restart|try-restart|force-reload|condrestart|--full-restart`
   - `launchctl stop|kill|bootout|unload|remove|disable …` and `launchctl kickstart -k …`
 
-How it reads a command: a small shell parser finds what runs in command position. It looks past shell keywords (`if … then`, `for … do`, `{ …; }`, `!`), variable assignments, redirections and wrappers (`sudo -u USER`, `doas`, `env`, `nice`, `ionice`, `chrt`, `taskset`, `timeout`, `stdbuf`, `nohup`, `setsid`, `time`, `exec`, `command`, `runuser`, `xargs`, `watch`). It checks the command strings given to `bash -c`/`sh -c`/`zsh -c`, `eval`, `su -c`, `trap`, `watch` and `env -S`, heredocs, here-strings and `echo … |` fed to a shell, and command substitutions, including those inside double quotes and unquoted heredocs (the shell runs them).
+How it reads a command: a small shell parser finds what runs in command position. It looks past shell keywords (`if … then`, `for … do`, `{ …; }`, `!`), variable assignments, redirections and wrappers (`sudo -u USER`, `doas`, `env`, `nice`, `ionice`, `chrt`, `taskset`, `timeout`, `stdbuf`, `nohup`, `setsid`, `time`, `exec`, `command`, `runuser`, `xargs`, `watch`, and the package runners above). It checks the command strings given to `bash -c`/`sh -c`/`zsh -c`, `eval`, `su -c`, `trap`, `watch`, `env -S`, `npx -c` and `pnpm dlx -c`, heredocs, here-strings and `echo … |` fed to a shell, and command substitutions, including those inside double quotes and unquoted heredocs (the shell runs them).
 
-Allowed: `kill <pid>`, `kill "$(cat server.pid)"`, `kill $!`, `kill %1`, `kill -1 <pid>` (SIGHUP to one process), `kill -- -<pgid>` (a process group you name, like a PID you name), and commands that only mention these words: `echo 'pkill node'`, `echo "kill $(pgrep node)"` (it only runs `pgrep`), `git log --grep pkill`, `command -v pkill`, a quoted heredoc written to a file.
+Allowed: `kill <pid>`, `kill "$(cat server.pid)"`, `fkill <pid>`, `kill $!`, `kill %1`, `kill -1 <pid>` (SIGHUP to one process), `kill -- -<pgid>` (a process group you name, like a PID you name), and commands that only mention these words: `echo 'pkill node'`, `echo "kill $(pgrep node)"` (it only runs `pgrep`), `git log --grep pkill`, `command -v pkill`, a quoted heredoc written to a file.
 
 When it blocks, Claude sees why and what to do instead:
 
@@ -76,7 +79,8 @@ Do not touch processes you did not start; if one has to stop, ask the user.
 
 kill-guard is a guard rail for an agent that means well, not a sandbox. It covers the shapes such an agent writes, and a determined command can still get past it. It does not see:
 
-- code in another language or file: `python -c "os.kill(…)"`, `node -e …`, a script (`./stop.sh`, `bash stop.sh`), `npm run kill`, port killers such as `npx kill-port 3000`
+- code in another language or file: `python -c "os.kill(…)"`, `node -e …`, a script (`./stop.sh`, `bash stop.sh`), a package script (`npm run kill`, or `yarn kill-port` when `kill-port` is a script or bin of the project)
+- port killers under other names, and runner options not listed in the hook that take a value (`npx --foo bar kill-port 3000`)
 - other machines and containers: `ssh host pkill …`, `docker exec … kill …`
 - state from earlier calls: a variable or shell function set in a previous Bash call, or PIDs that `pgrep` wrote to a file and a later `kill $(cat …)` reads back
 - commands built at run time: `$CMD node` with `CMD=pkill`, `$(which pkill) node`, aliases
@@ -129,7 +133,7 @@ Everything is set with environment variables. Put them in the `env` block of `.c
 | `RULES_DRIFT_REF` | unset (working tree) | Git ref to read the files from, e.g. `origin/main`. Nothing is checked while it doesn't resolve. |
 | `GUARD_HOOKS_STATE_DIR` | see below | Where rules-drift keeps its per-session records. |
 | `KILL_GUARD` | on | `off` disables kill-guard. |
-| `KILL_GUARD_PATTERN` | unset (block all) | Regex (case-insensitive). If set, `pkill`/`killall` are blocked only when a pattern argument matches it, e.g. `node\|server/index\|myapp`. A pattern only known at run time (`pkill "$NAME"`, `xargs pkill`) is blocked. The other rules still apply. An invalid regex blocks all. |
+| `KILL_GUARD_PATTERN` | unset (block all) | Regex (case-insensitive). If set, `pkill`/`killall` and `fkill <name>` are blocked only when a pattern argument matches it, e.g. `node\|server/index\|myapp`. A pattern only known at run time (`pkill "$NAME"`, `xargs pkill`) is blocked. The other rules still apply. An invalid regex blocks all. |
 | `KILL_GUARD_UNITS` | unset | Comma-separated systemd units or launchd labels that must not be stopped or restarted (`systemctl`, `service`, `launchctl`). A template name such as `worker` also covers its instances (`worker@1`). |
 | `KILL_GUARD_HINT` | unset | Text appended to the block message, e.g. how to restart a service properly. |
 
@@ -160,7 +164,7 @@ The hooks are standalone scripts, so you can wire them into `settings.json` your
 npm test
 ```
 
-Tests use `node:test` only. `test/plugin.test.mjs` runs the commands from `hooks/hooks.json` through bash exactly as Claude Code does. `test/probes.test.mjs` runs every probe from the independent verification of 0.1.0 against the real hook process, plus a list of ordinary agent commands that must keep passing.
+Tests use `node:test` only. `test/plugin.test.mjs` runs the commands from `hooks/hooks.json` through bash exactly as Claude Code does. `test/probes.test.mjs` runs every probe from the independent verification of 0.1.0 against the real hook process, plus the npm port killer shapes and a list of ordinary agent commands that must keep passing.
 
 Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
