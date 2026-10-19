@@ -4,13 +4,16 @@
 // a production service, the user's own tools. Origin: a session stopped its test server with
 // `pkill -f "node server/index.ts"` and took the production server running the same file down with it.
 // Blocks: pkill and killall; kill with PIDs found by pgrep/pidof/ps/lsof/fuser (directly, through a variable or loop,
-// or through xargs); kill -1 and kill 0; fuser -k; stop/restart-type actions on protected systemd units or launchd labels.
-// It follows wrappers (sudo, env, nice, timeout, xargs, watch, …), shell keywords (if/then/do/{/!), bash -c, eval,
-// heredocs fed to a shell, and command substitutions, also inside double quotes.
-// Allows: `kill <pid>`, `kill "$(cat <file>.pid)"`, and everything that only mentions these words (echo, grep, git log).
+// or through xargs); kill -1 and kill 0; fuser -k; the npm port killers kill-port and fkill (by port or name);
+// stop/restart-type actions on protected systemd units or launchd labels.
+// It follows wrappers (sudo, env, nice, timeout, xargs, watch, …), package runners (npx, npm exec, pnpm dlx, bunx,
+// yarn dlx, …), shell keywords (if/then/do/{/!), bash -c, eval, heredocs fed to a shell, and command substitutions,
+// also inside double quotes.
+// Allows: `kill <pid>`, `kill "$(cat <file>.pid)"`, `fkill <pid>`, `kill-port --help`, and everything that only
+// mentions these words (echo, grep, git log).
 // Options (env vars, e.g. in the "env" block of .claude/settings.json):
 //   KILL_GUARD=off         do nothing
-//   KILL_GUARD_PATTERN     regex; block pkill/killall only when a pattern argument matches it (default: block all)
+//   KILL_GUARD_PATTERN     regex; block pkill/killall/fkill <name> only when a pattern argument matches it (default: block all)
 //   KILL_GUARD_UNITS       comma-separated systemd units / launchd labels to protect, e.g. "myapp,postgresql"
 //   KILL_GUARD_HINT        extra text appended to the block message (e.g. how to deploy or restart properly)
 // Fail-closed: if the input cannot be read or parsed, the command is blocked (exit 2).
@@ -20,6 +23,10 @@ import { fileURLToPath } from "node:url";
 import { flatten, parse } from "./shell.mjs";
 
 const PATTERN_KILLERS = new Set(["pkill", "killall"]);
+// npm packages that kill whatever listens on a port: kill-port and kill-port-process (both install the bin kill-port)
+const PORT_KILLERS = new Set(["kill-port", "kill-port-process"]);
+// fkill-cli (bin fkill) kills by PID, by name, or by port (:3000)
+const FKILL = new Set(["fkill", "fkill-cli"]);
 const PID_SOURCES = new Set(["pgrep", "pidof", "ps", "lsof", "fuser"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const KEYWORDS = new Set(["if", "then", "else", "elif", "while", "until", "do", "!", "{"]);
@@ -31,14 +38,30 @@ const LAUNCHD_ACTIONS = new Set(["stop", "kill", "bootout", "unload", "remove", 
 const SYSTEMCTL_VALUES = new Set(["-s", "--signal", "-H", "--host", "-M", "--machine", "-t", "--type", "-p", "--property", "-P", "-n", "--lines", "-o", "--output", "--kill-whom", "--kill-value", "--job-mode", "--root", "--image", "--state", "--what", "--timestamp", "--preset-mode", "--message", "--when", "--drop-in"]);
 const MAX_DEPTH = 8; // bash -c / eval / heredoc nesting
 
+// Package runners: they run their package argument (a version, kill-port@2, is dropped), or with --package the
+// command after it. npx -c and pnpm dlx -c run a command string in a shell.
+const NPM_EXEC = { short: "pcw", long: ["--package", "--call", "--workspace", "--cache", "--userconfig", "--registry", "--prefix", "--loglevel", "--shell", "--script-shell"], script: ["c", "--call"], pkg: true };
+const PNPM_DLX = { long: ["--package", "--allow-build", "--cpu", "--os", "--libc"], shellMode: ["c", "--shell-mode"], pkg: true };
+const BUNX = { short: "p", long: ["--package"], pkg: true };
+// Runners reached through a subcommand (npm exec, pnpm dlx, yarn dlx, bun x); global: options before the subcommand
+const RUNNERS = {
+  npm: { global: { short: "Cw", long: ["--prefix", "--workspace", "--registry", "--cache", "--userconfig", "--loglevel"] }, sub: { exec: NPM_EXEC, x: NPM_EXEC } },
+  pnpm: { global: { short: "CF", long: ["--dir", "--filter"] }, sub: { dlx: PNPM_DLX, exec: { short: "F", long: ["--filter", "--resume-from"], shellMode: ["c", "--shell-mode"] } } },
+  yarn: { global: { long: ["--cwd"] }, sub: { dlx: { short: "p", long: ["--package"], pkg: true }, exec: {} } },
+  bun: { global: { long: ["--cwd"] }, sub: { x: BUNX } },
+};
+
 // Commands that run the rest of their words as a command.
 //   short: option letters that take a value; long: long options that take a value (unless written --opt=value);
+//   script: options whose value is a command string it runs (env -S, npx -c);
+//   shellMode: options that make it run the rest of its words as a command string (pnpm dlx -c);
 //   positional: words between the options and the command (1, or "number" for an optional numeric one);
-//   pidMode: options that make it act on existing PIDs instead of running a command
+//   pidMode: options that make it act on existing PIDs instead of running a command;
+//   pkg: the command is a package spec that can carry a version
 const WRAPPERS = {
   sudo: { short: "ugpChDrtUTR", long: ["--user", "--group", "--host", "--prompt", "--close-from", "--chdir", "--role", "--type", "--other-user", "--command-timeout", "--chroot"] },
   doas: { short: "uC" },
-  env: { short: "uCS", long: ["--unset", "--chdir", "--split-string"] },
+  env: { short: "uCS", long: ["--unset", "--chdir", "--split-string"], script: ["S", "--split-string"] },
   nice: { short: "n", long: ["--adjustment"] },
   ionice: { short: "cnpPu", long: ["--class", "--classdata", "--pid", "--pgid", "--uid"], pidMode: ["p", "P", "u", "--pid", "--pgid", "--uid"] },
   chrt: { short: "TPD", long: ["--sched-runtime", "--sched-period", "--sched-deadline"], positional: "number", pidMode: ["p", "--pid"] },
@@ -55,9 +78,14 @@ const WRAPPERS = {
   xargs: { short: "adEILnPs", long: ["--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"] },
   watch: { short: "nq", long: ["--interval", "--equexit"] },
   runuser: { short: "ugGsw", long: ["--user", "--group", "--supp-group", "--shell", "--whitelist-environment"] },
+  npx: NPM_EXEC,
+  pnpx: PNPM_DLX,
+  bunx: BUNX,
 };
 
 const base = (w) => w.split("/").pop();
+// kill-port@2 → kill-port, @scope/pkg@latest → @scope/pkg
+const withoutVersion = (spec) => spec.replace(/^(@?[^@]+)@.*$/, "$1");
 
 export function configFromEnv(env = process.env) {
   let pattern = null;
@@ -72,7 +100,7 @@ export function configFromEnv(env = process.env) {
   return { pattern, units };
 }
 
-// Skip a wrapper's options from words[i]. Returns the index after them, the options seen and env -S's string.
+// Skip a wrapper's options from words[i]. Returns the index after them, the options seen and a script option's string.
 function skipOptions(words, i, spec) {
   const seen = new Set();
   let split = null;
@@ -85,7 +113,7 @@ function skipOptions(words, i, spec) {
       const name = eq < 0 ? w : w.slice(0, eq);
       seen.add(name);
       const takesValue = eq < 0 && spec.long?.includes(name);
-      if (name === "--split-string") split = eq < 0 ? words[i + 1] ?? "" : w.slice(eq + 1);
+      if (spec.script?.includes(name)) split = eq < 0 ? words[i + 1] ?? "" : w.slice(eq + 1);
       i += takesValue ? 2 : 1;
       continue;
     }
@@ -96,7 +124,7 @@ function skipOptions(words, i, spec) {
         // -u root, -uroot, -n10
         const attached = w.slice(j + 1);
         if (!attached) step = 2;
-        if (w[j] === "S") split = attached || (words[i + 1] ?? "");
+        if (spec.script?.includes(w[j])) split = attached || (words[i + 1] ?? "");
         break;
       }
     }
@@ -173,13 +201,24 @@ export function unwrap(c) {
       });
       return out;
     }
-    const spec = WRAPPERS[name];
+    let spec = Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : null;
+    let start = i + 1;
+    if (!spec && Object.hasOwn(RUNNERS, name)) {
+      // npm exec, pnpm dlx, yarn dlx, bun x, …: skip global options, then the subcommand
+      const g = skipOptions(words, start, RUNNERS[name].global);
+      const sub = RUNNERS[name].sub;
+      if (Object.hasOwn(sub, words[g.i] ?? "")) (spec = sub[words[g.i]]), (start = g.i + 1);
+    }
     if (!spec) break;
-    const r = skipOptions(words, i + 1, spec);
+    const r = skipOptions(words, start, spec);
     if (spec.pidMode?.some((o) => r.seen.has(o))) return out;
     i = r.i;
-    if (name === "env" && r.split !== null) {
+    if (r.split !== null) {
       out.scripts.push([r.split, ...words.slice(i)].join(" "));
+      return out;
+    }
+    if (spec.shellMode?.some((o) => r.seen.has(o))) {
+      out.scripts.push(words.slice(i).join(" "));
       return out;
     }
     if (spec.positional === 1) i++;
@@ -189,6 +228,7 @@ export function unwrap(c) {
       out.scripts.push(words.slice(i).join(" ")); // watch runs its arguments with sh -c
       return out;
     }
+    if (spec.pkg && i < words.length) words[i] = withoutVersion(words[i]);
   }
   out.words = words.slice(i);
   out.info = info.slice(i);
@@ -301,6 +341,24 @@ function checkCommand(c, flow, cfg, ctx, depth, cmds) {
     if (wide) return "kill 0 signals every process in the current process group";
   }
   if (name === "fuser" && args.some((a) => a === "--kill" || /^-[A-Za-z0-9]*k/.test(a))) return "fuser -k kills whatever uses a port or file, unnamed";
+  // kill-port with only --help, --version or --verbose has no port to kill
+  if (PORT_KILLERS.has(name) && (u.viaXargs || args.some((a) => !/^(-h|-v|--help|--version|--verbose)$/.test(a)))) return `${name} kills whatever listens on a port, unnamed`;
+  if (FKILL.has(name)) {
+    if (u.viaXargs) return `${name} gets its targets from xargs: a PID, a name or a port`;
+    const targets = [];
+    for (let k = 0; k < args.length; k++) {
+      if (args[k] === "-t" || args[k] === "--force-after-timeout") k++;
+      else if (!args[k].startsWith("-")) targets.push([args[k], argInfo[k]]);
+    }
+    const port = targets.find(([a]) => a.startsWith(":"));
+    if (port) return `${name} ${port[0]} kills whatever listens on a port, unnamed`;
+    const dynamic = targets.find(([, inf]) => inf.vars.length || inf.subs.length);
+    if (dynamic) return `${name} with the target "${dynamic[0]}", which is only known when it runs`;
+    // a name kills like pkill, so KILL_GUARD_PATTERN applies; a PID passes like kill <pid>
+    const names = targets.filter(([a]) => !/^\d+$/.test(a));
+    const hit = cfg.pattern ? names.find(([a]) => cfg.pattern.test(a)) : names[0];
+    if (hit) return `${name} kills every process matching a name ("${hit[0]}")`;
+  }
 
   const unitOf = (t) => base(t).replace(/\.(service|plist)$/, "");
   const isProtected = (t) => cfg.units.some((unit) => unitOf(t) === unit || (!unit.includes("@") && unitOf(t).startsWith(`${unit}@`)));
@@ -341,7 +399,7 @@ export function blockReason(command, { pattern = null, units = [] } = {}) {
 }
 
 export const BLOCK_MESSAGE = (why, hint = "") =>
-  `KILL GUARD: blocked because ${why}. Killing processes by name or pattern can take down processes this session did not start ` +
+  `KILL GUARD: blocked because ${why}. Killing processes by name, pattern or port can take down processes this session did not start ` +
   `(another session's dev server, a production service, the user's own tools). ` +
   `When you start a process, save its PID (\`… & echo $! > /tmp/<name>.pid\`) and stop it only with \`kill "$(cat /tmp/<name>.pid)"\`. ` +
   `Do not touch processes you did not start; if one has to stop, ask the user.` +

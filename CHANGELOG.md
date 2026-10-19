@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### kill-guard
+
+Added:
+
+- npm port killers are blocked, like `fuser -k`: they kill whatever listens on a port without naming it. This covers `kill-port` and `kill-port-process`, run directly (`kill-port 3000`, `./node_modules/.bin/kill-port 3000`) or through a package runner: `npx`, `npm exec`/`npm x`, `pnpm dlx`, `pnpm exec`, `pnpx`, `bunx`, `bun x`, `yarn dlx`, `yarn exec`. Runner options (`npx -y`, `-p <pkg>`, `--package=<pkg>`), versions (`kill-port@2`) and the command strings of `npx -c` and `pnpm dlx -c` are followed. `kill-port` with no port (`npx kill-port --help`) passes.
+- `fkill`/`fkill-cli` with a port (`fkill :3000`) or a name (`fkill node`) is blocked. A name kills like `pkill`, so `KILL_GUARD_PATTERN` narrows it the same way. `fkill <pid>` passes.
+
+Changed:
+
+- The block message says "by name, pattern or port", since `fuser -k` and the port killers name no process.
+- README: npm port killers moved from "What stays out of reach" to the blocked list.
+
 ## 0.1.1 (2026-10-19)
 
 An independent verification of 0.1.0 installed the plugin from GitHub and probed kill-guard with common shell shapes. Several got past it. Every probe from that report is now a test in `test/probes.test.mjs`, with the exit code it must give.

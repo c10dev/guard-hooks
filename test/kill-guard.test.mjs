@@ -65,6 +65,23 @@ const blocked = [
   "kill -s KILL -1",
   "kill -9 -- -1",
   "kill 0",
+  // npm port killers, installed or through a package runner
+  "npx kill-port 3000",
+  "npx -y kill-port 3000 5173",
+  "npx -yp kill-port kill-port 3000",
+  "npx --call='kill-port 3000'",
+  "npm --prefix app exec kill-port 3000",
+  "pnpm --filter web exec kill-port 3000",
+  "yarn dlx -p kill-port kill-port 3000",
+  "bunx --bun kill-port 3000",
+  "kill-port --port=3000,3001",
+  'PORT=3000 npx kill-port "$PORT"',
+  "bash -c 'npx kill-port 3000'",
+  "npm run dev & npx kill-port 3000",
+  "npx fkill-cli node",
+  "fkill -t 5 :8080",
+  "fkill $P",
+  "pgrep node | xargs fkill",
 ];
 const allowed = [
   "kill 12345",
@@ -81,6 +98,14 @@ const allowed = [
   "git log --grep pkill",
   "grep -rn 'systemctl --user restart myapp' docs",
   "npm test",
+  "npx kill-port --version",
+  "fkill -f 1234 5678",
+  "npm ls kill-port",
+  "pnpm add -D kill-port",
+  "git commit -m 'block npx kill-port'",
+  "npx",
+  "npm exec",
+  "pnpm dlx",
   "",
 ];
 
@@ -97,7 +122,10 @@ test("KILL_GUARD_PATTERN narrows pkill/killall to matching patterns", () => {
   for (const c of ["pkill node", 'pkill -f "node server/index.ts"', "killall -9 myapp", "sudo pkill -f myapp"]) assert.ok(blockReason(c, cfg), `should block: ${c}`);
   for (const c of ["pkill vite", "killall firefox"]) assert.equal(blockReason(c, cfg), null, `should allow: ${c}`);
   // pattern-independent rules still apply
-  for (const c of ["kill $(pgrep vite)", "fuser -k 5173/tcp"]) assert.ok(blockReason(c, cfg), `should block: ${c}`);
+  for (const c of ["kill $(pgrep vite)", "fuser -k 5173/tcp", "npx kill-port 5173", "fkill :5173"]) assert.ok(blockReason(c, cfg), `should block: ${c}`);
+  // fkill by name kills like pkill, so the pattern narrows it the same way
+  assert.ok(blockReason("fkill node", cfg));
+  assert.equal(blockReason("fkill vite", cfg), null);
   // an invalid regex falls back to blocking every pattern kill
   assert.ok(blockReason("pkill vite", configFromEnv({ KILL_GUARD_PATTERN: "(" })));
   // a pattern only known when the command runs cannot be checked, so it is blocked
